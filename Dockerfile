@@ -26,8 +26,7 @@ WORKDIR /app
 # Copy the binary from the builder stage
 COPY --from=builder /app/godrat-bot .
 
-# Copy the .env file for environment variables
-COPY .env .
+
 
 # Install ca-certificates for HTTPS requests (needed for Supabase/Telegram APIs)
 RUN apk --no-cache add ca-certificates
