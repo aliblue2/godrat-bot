@@ -37,6 +37,9 @@ func main() {
 		log.Fatal("Supabase init error:", err)
 	}
 
+	// Map to store pending class additions (chatID -> partial Class)
+	pendingClasses := make(map[int64]models.Class)
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
@@ -49,6 +52,30 @@ func main() {
 		chatID := update.Message.Chat.ID
 		text := update.Message.Text
 
+		// Check if user is responding to IsPrimary prompt
+		if class, exists := pendingClasses[chatID]; exists {
+			isPrimaryText := strings.TrimSpace(strings.ToLower(text))
+			if isPrimaryText == "بله" || isPrimaryText == "خیر" {
+				// Set IsPrimary based on user response
+				class.IsPrimary = isPrimaryText == "بله"
+
+				// Save to Supabase
+				_, _, err := client.From("class").Insert(class, false, "", "", "").Execute()
+				if err != nil {
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ خطا در ذخیره کلاس: %s", err.Error())))
+				} else {
+					bot.Send(tgbotapi.NewMessage(chatID, "✅ کلاس با موفقیت ذخیره شد!"))
+				}
+
+				// Clear pending class
+				delete(pendingClasses, chatID)
+				continue
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ لطفاً فقط 'بله' یا 'خیر' وارد کنید."))
+				continue
+			}
+		}
+
 		switch text {
 		case "/start":
 			bot.Send(tgbotapi.NewMessage(chatID,
@@ -60,9 +87,9 @@ func main() {
 		case "/addclass":
 			bot.Send(tgbotapi.NewMessage(chatID,
 				"📝 لطفاً اطلاعات کلاس رو به این شکل بفرست:\n\n"+
-					"نام درس | نام استاد | لینک گروه | شماره ترم | primary/other\n\n"+
+					"نام درس | نام استاد | لینک گروه | شماره ترم\n\n"+
 					"مثال:\n"+
-					"سیستم‌عامل | دکتر احمدی | https://t.me/os4041 | 4041 | primary"))
+					"سیستم‌عامل | دکتر احمدی | https://t.me/os4041 | 4041"))
 			continue
 
 		case "/findclass":
@@ -74,7 +101,6 @@ func main() {
 
 		case "/listclasses":
 			var results []models.Class
-			// Fetch all classes
 			resp, _, err := client.From("class").Select("id, name, master, link, semester, is_primary", "", false).
 				Execute()
 
@@ -84,7 +110,6 @@ func main() {
 				continue
 			}
 
-			// Log raw response for debugging
 			log.Printf("Supabase response: %s", string(resp))
 
 			err = json.Unmarshal(resp, &results)
@@ -99,7 +124,6 @@ func main() {
 				continue
 			}
 
-			// Separate primary and non-primary classes
 			var primaryClasses, otherClasses []models.Class
 			for _, c := range results {
 				if c.IsPrimary {
@@ -110,8 +134,6 @@ func main() {
 			}
 
 			msg := "📚 لیست همه کلاس‌ها:\n\n"
-
-			// Primary classes section
 			if len(primaryClasses) > 0 {
 				msg += "🔷 کلاس‌های اصلی:\n"
 				for _, c := range primaryClasses {
@@ -122,7 +144,6 @@ func main() {
 				msg += "🔷 هیچ کلاس اصلی‌ای یافت نشد.\n"
 			}
 
-			// Non-primary classes section
 			if len(otherClasses) > 0 {
 				msg += "\n🔶 کلاس‌های غیر اصلی:\n"
 				for _, c := range otherClasses {
@@ -137,10 +158,10 @@ func main() {
 			continue
 		}
 
-		// Handle class addition
-		if strings.Count(text, "|") == 4 {
+		// Handle class addition (initial input)
+		if strings.Count(text, "|") == 3 {
 			parts := strings.Split(text, "|")
-			if len(parts) != 5 {
+			if len(parts) != 4 {
 				bot.Send(tgbotapi.NewMessage(chatID, "❌ فرمت ورودی اشتباه است. لطفاً دوباره امتحان کنید."))
 				continue
 			}
@@ -152,22 +173,19 @@ func main() {
 				continue
 			}
 
+			// Store partial class data
 			classId := uuid.New()
 			class := models.Class{
-				Id:        classId,
-				Name:      strings.TrimSpace(parts[0]),
-				Master:    strings.TrimSpace(parts[1]),
-				Link:      strings.TrimSpace(parts[2]),
-				Semester:  semesterStr, // Store as string
-				IsPrimary: strings.ToLower(strings.TrimSpace(parts[4])) == "primary",
+				Id:       classId,
+				Name:     strings.TrimSpace(parts[0]),
+				Master:   strings.TrimSpace(parts[1]),
+				Link:     strings.TrimSpace(parts[2]),
+				Semester: semesterStr,
 			}
 
-			_, _, err := client.From("class").Insert(class, false, "", "", "").Execute()
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ خطا در ذخیره کلاس: %s", err.Error())))
-				continue
-			}
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ کلاس با موفقیت ذخیره شد!"))
+			// Save to pending classes and ask for IsPrimary
+			pendingClasses[chatID] = class
+			bot.Send(tgbotapi.NewMessage(chatID, "📌 آیا این درس اصلی است؟ لطفاً 'بله' یا 'خیر' را وارد کنید."))
 			continue
 		}
 
@@ -175,17 +193,14 @@ func main() {
 		searchName := strings.TrimSpace(text)
 		if searchName != "" && text != "/addclass" && text != "/start" && text != "/findclass" && text != "/listclasses" {
 			var results []models.Class
-			// Normalize search term for Persian text
 			searchName = strings.TrimSpace(searchName)
 			if !utf8.ValidString(searchName) {
 				bot.Send(tgbotapi.NewMessage(chatID, "❌ نام جستجو معتبر نیست. لطفاً از حروف معتبر استفاده کنید."))
 				continue
 			}
 
-			// Log the search term for debugging
 			log.Printf("Searching for class: %s", searchName)
 
-			// Perform case-insensitive search
 			resp, _, err := client.From("class").Select("id, name, master, link, semester, is_primary", "", false).
 				Ilike("name", "%"+searchName+"%").
 				Execute()
@@ -196,7 +211,6 @@ func main() {
 				continue
 			}
 
-			// Log raw response for debugging
 			log.Printf("Supabase response: %s", string(resp))
 
 			err = json.Unmarshal(resp, &results)
