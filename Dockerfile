@@ -1,5 +1,5 @@
-# Use the official Go image as the build stage
-FROM golang:1.21-alpine AS builder
+# Use the official Go 1.24 image as the build stage
+FROM golang:1.24-alpine AS builder
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -25,7 +25,6 @@ WORKDIR /app
 
 # Copy the binary from the builder stage
 COPY --from=builder /app/godrat-bot .
-
 
 
 # Install ca-certificates for HTTPS requests (needed for Supabase/Telegram APIs)
